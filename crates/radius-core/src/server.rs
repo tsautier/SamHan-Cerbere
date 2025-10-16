@@ -158,7 +158,7 @@ pub async fn run_server_with_params(params: ServerParams) -> Result<()> {
 
 /// Build RADIUS reply and compute Response Authenticator per RFC2865
 fn build_reply(req:&Header, code: Code, attrs: Vec<Attr>, shared_secret: &str) -> Vec<u8> {
-    use md5::{Md5, Digest};
+    use md5::Context;
     let mut out = Vec::with_capacity(1024);
     // placeholder header
     let mut hdr = [0u8; Header::LEN];
@@ -173,12 +173,12 @@ fn build_reply(req:&Header, code: Code, attrs: Vec<Attr>, shared_secret: &str) -
     out[2..4].copy_from_slice(&length.to_be_bytes());
 
     // Response Authenticator = MD5(Code+ID+Length+RequestAuth+Attrs+Secret)
-    let mut hasher = Md5::new();
-    hasher.update(&out[0..4]);
-    hasher.update(&req.authenticator);
-    if out.len() > Header::LEN { hasher.update(&out[Header::LEN..]); }
-    hasher.update(shared_secret.as_bytes());
-    let digest = hasher.finalize();
+    let mut hasher = Context::new();
+    hasher.consume(&out[0..4]);
+    hasher.consume(&req.authenticator);
+    if out.len() > Header::LEN { hasher.consume(&out[Header::LEN..]); }
+    hasher.consume(shared_secret.as_bytes());
+    let digest = hasher.compute();
     out[4..20].copy_from_slice(&digest[..16]);
     out
 }

@@ -48,7 +48,7 @@ enum RadiusOp {
         #[arg(long, default_value_t = 1)] id: u8,
         #[arg(long, default_value_t = 1500)] timeout_ms: u64,
         /// Shared secret used to encrypt PAP and verify responses
-        #[arg(long, env = "CERBERE_RADIUS_SECRET", default_value = "changeme")] shared_secret: String,
+        #[arg(long, default_value = "changeme")] shared_secret: String,
         #[arg(long, default_value = "alice")] user: String,
         #[arg(long, default_value = "secret")] password: String,
         /// MFA code to send on challenge
@@ -135,17 +135,6 @@ async fn real_main() -> anyhow::Result<()> {
                 RadiusOp::Test { dest, id, timeout_ms, shared_secret, user, password, mfa_code } => {
                     self_test(&dest, id, timeout_ms, shared_secret, user, password, mfa_code).await?;
                 }
-                UsersOp::AddPlain { user, password } => {
-                    let mut fb = id_connectors::file::FileBackend::load(path)?;
-                    fb.set_plain(&user, &password)?;
-                    println!("user '{}' set with plaintext (TEST ONLY)", user);
-                }
-                UsersOp::AddNthash { user, password } => {
-                    let nthash = compute_nthash_hex(&password);
-                    let mut fb = id_connectors::file::FileBackend::load(path)?;
-                    fb.set_nthash_hex(&user, &nthash)?;
-                    println!("user '{}' set with nthash {}", user, nthash);
-                }
             }
         }
         Commands::Users { op } => {
@@ -197,17 +186,6 @@ async fn real_main() -> anyhow::Result<()> {
                 MfaOp::List => {
                     for e in store.list() { println!("{}", e.user); }
                 }
-                UsersOp::AddPlain { user, password } => {
-                    let mut fb = id_connectors::file::FileBackend::load(path)?;
-                    fb.set_plain(&user, &password)?;
-                    println!("user '{}' set with plaintext (TEST ONLY)", user);
-                }
-                UsersOp::AddNthash { user, password } => {
-                    let nthash = compute_nthash_hex(&password);
-                    let mut fb = id_connectors::file::FileBackend::load(path)?;
-                    fb.set_nthash_hex(&user, &nthash)?;
-                    println!("user '{}' set with nthash {}", user, nthash);
-                }
             }
         }
         Commands::Generate { op } => {
@@ -230,7 +208,7 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, us
     use tokio::net::UdpSocket;
     use tokio::time::{timeout, Duration};
     use radius_core::packet::{Header, Code, Attr, encode_attrs};
-    use md5::{Md5, Digest};
+    use md5::Context;
     use rand::RngCore;
 
     // Random Request Authenticator
@@ -239,17 +217,17 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, us
 
     // Encrypt User-Password per RFC2865
     fn encrypt_user_password(pw:&[u8], shared:&str, req_auth:&[u8;16]) -> Vec<u8> {
-        let mut P = pw.to_vec();
+        let mut p = pw.to_vec();
         // pad to multiple of 16 with zeros
-        let pad = (16 - (P.len() % 16)) % 16;
-        P.extend(std::iter::repeat(0u8).take(pad));
+        let pad = (16 - (p.len() % 16)) % 16;
+        p.extend(std::iter::repeat(0u8).take(pad));
         let mut out = Vec::new();
         let mut prev = req_auth.to_vec();
-        for chunk in P.chunks(16) {
-            let mut hasher = Md5::new();
-            hasher.update(shared.as_bytes());
-            hasher.update(&prev);
-            let b = hasher.finalize();
+        for chunk in p.chunks(16) {
+            let mut hasher = Context::new();
+            hasher.consume(shared.as_bytes());
+            hasher.consume(&prev);
+            let b = hasher.compute();
             let mut c = [0u8;16];
             for i in 0..16 { c[i] = chunk[i] ^ b[i]; }
             out.extend_from_slice(&c);
@@ -271,12 +249,12 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, us
     let n = timeout(Duration::from_millis(timeout_ms), sock.recv(&mut buf)).await??;
     if n < Header::LEN { anyhow::bail!("response too short"); }
     // Verify response authenticator
-    let mut hasher = Md5::new();
-    hasher.update(&buf[0..4]);
-    hasher.update(&req_auth);
-    if n > Header::LEN { hasher.update(&buf[Header::LEN..n]); }
-    hasher.update(shared_secret.as_bytes());
-    let digest = hasher.finalize();
+    let mut hasher = Context::new();
+    hasher.consume(&buf[0..4]);
+    hasher.consume(&req_auth);
+    if n > Header::LEN { hasher.consume(&buf[Header::LEN..n]); }
+    hasher.consume(shared_secret.as_bytes());
+    let digest = hasher.compute();
     let resp_auth = &buf[4..20];
     if &digest[..16] != resp_auth { anyhow::bail!("bad response authenticator"); }
 
@@ -309,12 +287,12 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, us
     let n2 = timeout(Duration::from_millis(timeout_ms), sock.recv(&mut buf)).await??;
     if n2 < Header::LEN { anyhow::bail!("response too short #2"); }
     // verify response authenticator #2
-    let mut hasher2 = Md5::new();
-    hasher2.update(&buf[0..4]);
-    hasher2.update(&req_auth2);
-    if n2 > Header::LEN { hasher2.update(&buf[Header::LEN..n2]); }
-    hasher2.update(shared_secret.as_bytes());
-    let digest2 = hasher2.finalize();
+    let mut hasher2 = Context::new();
+    hasher2.consume(&buf[0..4]);
+    hasher2.consume(&req_auth2);
+    if n2 > Header::LEN { hasher2.consume(&buf[Header::LEN..n2]); }
+    hasher2.consume(shared_secret.as_bytes());
+    let digest2 = hasher2.compute();
     if &digest2[..16] != &buf[4..20] { anyhow::bail!("bad response authenticator #2"); }
 
     let (hdr3, _rest3) = radius_core::packet::Header::parse(&buf[..n2])?;
@@ -322,7 +300,7 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, us
 }
 
 fn compute_nthash_hex(password: &str) -> String {
-    use md4::Md4;
+    use md4::{Digest, Md4};
     let mut le = Vec::with_capacity(password.len()*2);
     for ch in password.encode_utf16() {
         le.extend_from_slice(&ch.to_le_bytes());

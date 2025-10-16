@@ -24,7 +24,7 @@ impl Header {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Attr{ State(Vec<u8>), ChapPassword{ id:u8, hash:[u8;16] }, ChapChallenge(Vec<u8>), EapMessage(Vec<u8>),  State(Vec<u8>),  UserName(String), UserPassword(Vec<u8>), VendorSpecific(u32,Vec<u8>), Other(u8,Vec<u8>) }
+pub enum Attr{ State(Vec<u8>), ChapPassword{ id:u8, hash:[u8;16] }, ChapChallenge(Vec<u8>), EapMessage(Vec<u8>),  UserName(String), UserPassword(Vec<u8>), VendorSpecific(u32,Vec<u8>), Other(u8,Vec<u8>) }
 
 pub fn parse_attrs(mut buf:&[u8])->Result<Vec<Attr>>{
     let mut out=Vec::new();
@@ -58,7 +58,6 @@ pub fn encode_attrs(attrs:&[Attr], out:&mut Vec<u8>){
             Attr::ChapPassword{ id, hash }=>{ out.push(3); out.push(19); out.push(*id); out.extend_from_slice(hash); }
             Attr::ChapChallenge(data)=>{ out.push(60); out.push((data.len()+2) as u8); out.extend_from_slice(data); }
             Attr::EapMessage(data)=>{ out.push(79); out.push((data.len()+2) as u8); out.extend_from_slice(data); }
-            Attr::State(data)=>{ out.push(24); out.push((data.len()+2) as u8); out.extend_from_slice(data); }
         }
     }
 }
