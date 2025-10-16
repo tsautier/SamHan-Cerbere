@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::fs;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use argon2::Argon2;
 use password_hash::{SaltString, PasswordHash, PasswordHasher, PasswordVerifier};
 
@@ -23,7 +23,10 @@ impl FileBackend {
     }
     pub fn add_user(&mut self, username:&str, password:&str)->Result<()>{
         let salt=SaltString::generate(&mut rand::thread_rng());
-        let hash=argon2::Argon2::default().hash_password(password.as_bytes(), &salt)?.to_string();
+        let hash = argon2::Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| anyhow!(e.to_string()))?
+            .to_string();
         self.users.push(UserRecord{ username:username.to_string(), hash, password_plain: None, nthash: None });
         self.save()
     }

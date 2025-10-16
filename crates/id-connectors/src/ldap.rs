@@ -1,4 +1,5 @@
-use ldap3::{LdapConn, Scope, SearchEntry, Result as LdapResult};
+use ldap3::{LdapConn, Scope, SearchEntry};
+use ldap3::result::Result as LdapResult;
 
 pub fn auth_simple(url:&str, bind_dn:&str, bind_password:&str, user_base_dn:&str, user:&str, password:&str) -> LdapResult<bool> {
     let mut ldap = LdapConn::new(url)?;
