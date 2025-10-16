@@ -1,11 +1,14 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, Args};
 use telemetry::init as telemetry_init;
 use tracing::info;
-use tokio::time::{timeout, Duration};
 
 #[derive(Parser)]
 #[command(name = "cerbere", version, about = "SamHan RADIUS + MFA (skeleton)")]
 struct Cli {
+    /// Path to config TOML (default: ./config/cerbere.toml if exists)
+    #[arg(long)]
+    config: Option<String>,
+
     #[command(subcommand)]
     cmd: Commands,
 }
@@ -14,11 +17,11 @@ struct Cli {
 enum Commands {
     /// Initialize a default config (placeholder)
     Init { #[arg(long, default_value_t = String::from("standalone"))] mode: String },
-    /// Run a minimal RADIUS server (UDP/1812)
+    /// Run a minimal RADIUS server (UDP)
     Run {
-        /// Bind address (default: 0.0.0.0:1812)
-        #[arg(long, default_value = "0.0.0.0:1812")]
-        bind: String
+        /// Bind address (overrides config if provided)
+        #[arg(long)]
+        bind: Option<String>
     },
     /// Show status (placeholder)
     Status { #[arg(long)] json: bool },
@@ -49,13 +52,46 @@ enum RadiusOp {
 async fn main() -> anyhow::Result<()> {
     telemetry_init();
     let cli = Cli::parse();
+
+    // Load config if available or requested
+    let cfg_path = cli.config.clone()
+        .or_else(|| {
+            let default = "./config/cerbere.toml";
+            if std::path::Path::new(default).exists() { Some(default.to_string()) } else { None }
+        });
+
+    if let Some(ref p) = cfg_path {
+        match storage::config::load_config(p) {
+            Ok(_) => info!("Loaded config from {}", p),
+            Err(e) => {
+                eprintln!("Config error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     match cli.cmd {
         Commands::Init { mode } => {
             info!("Initialized in mode: {}", mode);
         }
         Commands::Run { bind } => {
-            info!("Launching RADIUS server on {bind}");
-            radius_core::run_server(&bind).await?;
+            // Prefer CLI --bind, else fallback to config value if loaded, else default.
+            let final_bind = if let Some(b) = bind {
+                b
+            } else if let Some(ref p) = cfg_path {
+                match storage::config::load_config(p) {
+                    Ok(cfg) => cfg.server.bind,
+                    Err(e) => {
+                        eprintln!("Config error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                "0.0.0.0:1812".to_string()
+            };
+
+            info!("Launching RADIUS server on {final_bind}");
+            radius_core::run_server(&final_bind).await?;
         }
         Commands::Status { json } => {
             if json {
@@ -95,16 +131,14 @@ async fn self_test(dest: &str, id: u8, timeout_ms: u64) -> anyhow::Result<()> {
     sock.send(&out).await?;
 
     let mut buf = [0u8; 2048];
-    let fut = sock.recv(&mut buf);
-
-    let n = timeout(Duration::from_millis(timeout_ms), fut).await??;
+    let n = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), sock.recv(&mut buf)).await??;
     if n < Header::LEN {
         anyhow::bail!("response too short");
     }
 
     let (resp_hdr, _rest) = Header::parse(&buf[..n])?;
     if resp_hdr.code != Code::AccessAccept || resp_hdr.identifier != id {
-        anyhow::bail!("unexpected response: {:?}", resp_hdr.code as u8);
+        anyhow::bail!("unexpected response");
     }
 
     println!("Self-test OK: received Access-Accept (id={}) from {}", id, dest);

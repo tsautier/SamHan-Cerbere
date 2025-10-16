@@ -7,3 +7,6 @@ pub struct AuditRecord {
     pub action: String,
     pub ok: bool,
 }
+
+
+pub mod config;
