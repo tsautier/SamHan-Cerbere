@@ -99,7 +99,7 @@ async fn main() {
 }
 
 async fn real_main() -> anyhow::Result<()> {
-    telemetry_init();
+    let _telemetry = telemetry_init();
     let cli = Cli::parse();
 
     // Load config if available or requested
