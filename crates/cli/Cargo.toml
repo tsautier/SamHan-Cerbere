@@ -11,3 +11,7 @@ tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread","macros"] }
 telemetry = { path = "../telemetry" }
 radius-core = { path = "../radius-core" }
+storage = { path = "../storage" }
+id-connectors = { path = "../id-connectors" }
+mfa-broker = { path = "../mfa-broker" }
+serde_json = "1"

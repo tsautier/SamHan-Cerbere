@@ -1,12 +1,5 @@
-//! storage — skeleton
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct AuditRecord {
-    pub ts: u64,
-    pub user: String,
-    pub action: String,
-    pub ok: bool,
-}
-
-
+pub fn version()->&'static str{ env!("CARGO_PKG_VERSION") }
 pub mod config;
+pub mod mfa;
+pub mod audit;
+pub mod rotation;

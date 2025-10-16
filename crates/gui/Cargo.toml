@@ -9,5 +9,6 @@ anyhow = "1"
 iced = { version = "0.13", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread","macros"] }
 tracing = "0.1"
-telemetry = { path = "../telemetry" }
-radius-core = { path = "../radius-core" }
+policy-engine = { path = "../policy-engine" }
+storage = { path = "../storage" }
+mfa-broker = { path = "../mfa-broker" }

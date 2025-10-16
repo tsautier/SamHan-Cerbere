@@ -1,4 +1,3 @@
-# Corp default policy (skeleton)
 [[rules]]
 when = "group == 'VPN-Users'"
 action = "allow_mfa"
