@@ -1,13 +1,12 @@
 // Minimal MSCHAPv2 verification helpers (RFC 2759).
 // Requires user's NT hash (MD4 of Unicode password).
 
-use md4::{Md4};
-use sha1::{Sha1, Digest as _};
-use des::cipher::{KeyInit, BlockEncrypt, generic_array::GenericArray};
+use md4::Md4;
+use sha1::{Digest as _, Sha1};
+use des::cipher::{BlockEncrypt, KeyInit};
 use des::Des;
 
 pub fn nt_hash_from_password(password: &str) -> [u8;16] {
-    use std::iter::FromIterator;
     // Password to UTF-16LE
     let mut le = Vec::with_capacity(password.len()*2);
     for ch in password.encode_utf16() {
@@ -39,11 +38,9 @@ fn des_key_from_7_bytes(input: &[u8]) -> [u8;8] {
 fn des_encrypt(key7: &[u8], data8: &[u8;8]) -> [u8;8] {
     let key8 = des_key_from_7_bytes(key7);
     let cipher = Des::new_from_slice(&key8).unwrap();
-    let mut block = GenericArray::clone_from_slice(data8);
-    cipher.encrypt_block(&mut block);
-    let mut out = [0u8;8];
-    out.copy_from_slice(&block);
-    out
+    let mut block = *data8;
+    cipher.encrypt_block((&mut block).into());
+    block
 }
 
 fn challenge_hash(peer_challenge: &[u8;16], auth_challenge: &[u8;16], username: &str) -> [u8;8] {
