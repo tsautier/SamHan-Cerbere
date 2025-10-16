@@ -1,7 +1,16 @@
-pub struct LdapBackend {
-    pub url:String, pub bind_dn:String, pub bind_password:String, pub user_base_dn:String
-}
-impl LdapBackend {
-    pub fn new(url:String, bind_dn:String, bind_password:String, user_base_dn:String)->Self{ Self{url,bind_dn,bind_password,user_base_dn} }
-    pub fn authenticate(&self, _user:&str, _password:&str)->bool{ true } // stub
+use ldap3::{LdapConn, Scope, SearchEntry, Result as LdapResult};
+
+pub fn auth_simple(url:&str, bind_dn:&str, bind_password:&str, user_base_dn:&str, user:&str, password:&str) -> LdapResult<bool> {
+    let mut ldap = LdapConn::new(url)?;
+    ldap.simple_bind(bind_dn, bind_password)?.success()?;
+    // Heuristic filter: try sAMAccountName or uid
+    let filter = format!("(|(sAMAccountName={})(uid={}))", user, user);
+    let (rs, _res) = ldap.search(user_base_dn, Scope::Subtree, &filter, vec!["dn"])?.success()?;
+    if rs.is_empty() { return Ok(false); }
+    let entry = SearchEntry::construct(rs[0].clone());
+    let user_dn = entry.dn;
+    let ok = ldap.simple_bind(&user_dn, password)?.success().is_ok();
+    // Re-bind as service to keep connection consistent
+    let _ = ldap.simple_bind(bind_dn, bind_password)?.success();
+    Ok(ok)
 }

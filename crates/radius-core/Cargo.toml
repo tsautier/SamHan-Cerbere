@@ -9,3 +9,15 @@ anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread","macros","net"] }
 tracing = "0.1"
 policy-engine = { path = "../policy-engine" }
+
+uuid = { version = "1", features = ["v4"] }
+md5 = "0.7"
+storage = { path = "../storage" }
+id-connectors = { path = "../id-connectors" }
+mfa-broker = { path = "../mfa-broker" }
+
+md4 = "0.10"
+
+sha1 = "0.10"
+
+des = "0.8"

@@ -47,13 +47,22 @@ enum RadiusOp {
         #[arg(long, default_value = "127.0.0.1:1812")] dest: String,
         #[arg(long, default_value_t = 1)] id: u8,
         #[arg(long, default_value_t = 1500)] timeout_ms: u64,
-        /// Optional MFA code sent as VendorSpecific attr
+        /// Shared secret used to encrypt PAP and verify responses
+        #[arg(long, env = "CERBERE_RADIUS_SECRET", default_value = "changeme")] shared_secret: String,
+        #[arg(long, default_value = "alice")] user: String,
+        #[arg(long, default_value = "secret")] password: String,
+        /// MFA code to send on challenge
         #[arg(long)] mfa_code: Option<String>,
     }
 }
 
 #[derive(Subcommand)]
 enum UsersOp {
+    /// Add a user with plaintext password (TEST ONLY for CHAP)
+    AddPlain { #[arg(long)] user: String, #[arg(long)] password: String },
+    /// Add a user storing NT hash for EAP-MSCHAPv2
+    AddNthash { #[arg(long)] user: String, #[arg(long)] password: String },
+
     /// Add a user to the file backend (argon2-hashed)
     Add { #[arg(long)] user: String, #[arg(long)] password: String },
     /// List users
@@ -123,8 +132,19 @@ async fn real_main() -> anyhow::Result<()> {
         }
         Commands::Radius { op } => {
             match op {
-                RadiusOp::Test { dest, id, timeout_ms, mfa_code } => {
-                    self_test(&dest, id, timeout_ms, mfa_code).await?;
+                RadiusOp::Test { dest, id, timeout_ms, shared_secret, user, password, mfa_code } => {
+                    self_test(&dest, id, timeout_ms, shared_secret, user, password, mfa_code).await?;
+                }
+                UsersOp::AddPlain { user, password } => {
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_plain(&user, &password)?;
+                    println!("user '{}' set with plaintext (TEST ONLY)", user);
+                }
+                UsersOp::AddNthash { user, password } => {
+                    let nthash = compute_nthash_hex(&password);
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_nthash_hex(&user, &nthash)?;
+                    println!("user '{}' set with nthash {}", user, nthash);
                 }
             }
         }
@@ -138,6 +158,17 @@ async fn real_main() -> anyhow::Result<()> {
                 }
                 UsersOp::List => {
                     for u in fb.list() { println!("{}", u.username); }
+                }
+                UsersOp::AddPlain { user, password } => {
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_plain(&user, &password)?;
+                    println!("user '{}' set with plaintext (TEST ONLY)", user);
+                }
+                UsersOp::AddNthash { user, password } => {
+                    let nthash = compute_nthash_hex(&password);
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_nthash_hex(&user, &nthash)?;
+                    println!("user '{}' set with nthash {}", user, nthash);
                 }
             }
         }
@@ -166,6 +197,17 @@ async fn real_main() -> anyhow::Result<()> {
                 MfaOp::List => {
                     for e in store.list() { println!("{}", e.user); }
                 }
+                UsersOp::AddPlain { user, password } => {
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_plain(&user, &password)?;
+                    println!("user '{}' set with plaintext (TEST ONLY)", user);
+                }
+                UsersOp::AddNthash { user, password } => {
+                    let nthash = compute_nthash_hex(&password);
+                    let mut fb = id_connectors::file::FileBackend::load(path)?;
+                    fb.set_nthash_hex(&user, &nthash)?;
+                    println!("user '{}' set with nthash {}", user, nthash);
+                }
             }
         }
         Commands::Generate { op } => {
@@ -184,23 +226,109 @@ async fn real_main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn self_test(dest: &str, id: u8, timeout_ms: u64, mfa_code: Option<String>) -> anyhow::Result<()> {
+async fn self_test(dest: &str, id: u8, timeout_ms: u64, shared_secret:String, user:String, password:String, mfa_code: Option<String>) -> anyhow::Result<()> {
     use tokio::net::UdpSocket;
     use tokio::time::{timeout, Duration};
     use radius_core::packet::{Header, Code, Attr, encode_attrs};
+    use md5::{Md5, Digest};
+    use rand::RngCore;
 
-    let hdr = Header { code: Code::AccessRequest, identifier: id, length: Header::LEN as u16, authenticator: [0u8; 16] };
+    // Random Request Authenticator
+    let mut req_auth = [0u8;16];
+    rand::thread_rng().fill_bytes(&mut req_auth);
+
+    // Encrypt User-Password per RFC2865
+    fn encrypt_user_password(pw:&[u8], shared:&str, req_auth:&[u8;16]) -> Vec<u8> {
+        let mut P = pw.to_vec();
+        // pad to multiple of 16 with zeros
+        let pad = (16 - (P.len() % 16)) % 16;
+        P.extend(std::iter::repeat(0u8).take(pad));
+        let mut out = Vec::new();
+        let mut prev = req_auth.to_vec();
+        for chunk in P.chunks(16) {
+            let mut hasher = Md5::new();
+            hasher.update(shared.as_bytes());
+            hasher.update(&prev);
+            let b = hasher.finalize();
+            let mut c = [0u8;16];
+            for i in 0..16 { c[i] = chunk[i] ^ b[i]; }
+            out.extend_from_slice(&c);
+            prev = c.to_vec();
+        }
+        out
+    }
+
+    let hdr = Header { code: Code::AccessRequest, identifier: id, length: Header::LEN as u16, authenticator: req_auth };
     let mut attrs = Vec::new();
-    if let Some(code) = mfa_code { attrs.push(Attr::VendorSpecific(99999, format!("MFA-Code:{}", code).into_bytes())); }
+    attrs.push(Attr::UserName(user.clone()));
+    let enc = encrypt_user_password(password.as_bytes(), &shared_secret, &req_auth);
+    attrs.push(Attr::UserPassword(enc));
 
     let sock = UdpSocket::bind("0.0.0.0:0").await?; sock.connect(dest).await?;
     let mut out = Vec::with_capacity(1024); hdr.encode(&mut out); encode_attrs(&attrs, &mut out); sock.send(&out).await?;
 
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 4096];
     let n = timeout(Duration::from_millis(timeout_ms), sock.recv(&mut buf)).await??;
     if n < Header::LEN { anyhow::bail!("response too short"); }
-    let (resp_hdr, _rest) = Header::parse(&buf[..n])?;
-    if resp_hdr.code != Code::AccessAccept || resp_hdr.identifier != id { anyhow::bail!("unexpected response"); }
-    println!("Self-test OK: received Access-Accept (id={}) from {}", id, dest);
-    Ok(())
+    // Verify response authenticator
+    let mut hasher = Md5::new();
+    hasher.update(&buf[0..4]);
+    hasher.update(&req_auth);
+    if n > Header::LEN { hasher.update(&buf[Header::LEN..n]); }
+    hasher.update(shared_secret.as_bytes());
+    let digest = hasher.finalize();
+    let resp_auth = &buf[4..20];
+    if &digest[..16] != resp_auth { anyhow::bail!("bad response authenticator"); }
+
+    let (resp_hdr, rest) = radius_core::packet::Header::parse(&buf[..n])?;
+    match resp_hdr.code {
+        Code::AccessAccept => { println!("Primary OK (no MFA required)."); return Ok(()); }
+        Code::AccessReject => { println!("Rejected."); anyhow::bail!("reject"); }
+        Code::AccessChallenge => { /* Continue below with State */ }
+        _ => { println!("Unexpected code {:?}", resp_hdr.code); }
+    }
+
+    // Parse attrs for State
+    let attrs2 = radius_core::packet::parse_attrs(rest)?;
+    let mut state=None;
+    for a in attrs2 { if let Attr::State(v) = a { state=Some(v); } }
+    let st = state.ok_or_else(||anyhow::anyhow!("no State in challenge"))?;
+
+    // Follow-up Access-Request with State + MFA-Code
+    let mut req_auth2 = [0u8;16];
+    rand::thread_rng().fill_bytes(&mut req_auth2);
+    let hdr2 = Header { code: Code::AccessRequest, identifier: id.wrapping_add(1), length: Header::LEN as u16, authenticator: req_auth2 };
+    let mut attrs = Vec::new();
+    attrs.push(Attr::UserName(user));
+    attrs.push(Attr::State(st));
+    let mf = mfa_code.unwrap_or_else(||"000000".into());
+    attrs.push(Attr::VendorSpecific(99999, format!("MFA-Code:{}", mf).into_bytes()));
+
+    let mut out2 = Vec::with_capacity(1024); hdr2.encode(&mut out2); encode_attrs(&attrs, &mut out2);
+    sock.send(&out2).await?;
+    let n2 = timeout(Duration::from_millis(timeout_ms), sock.recv(&mut buf)).await??;
+    if n2 < Header::LEN { anyhow::bail!("response too short #2"); }
+    // verify response authenticator #2
+    let mut hasher2 = Md5::new();
+    hasher2.update(&buf[0..4]);
+    hasher2.update(&req_auth2);
+    if n2 > Header::LEN { hasher2.update(&buf[Header::LEN..n2]); }
+    hasher2.update(shared_secret.as_bytes());
+    let digest2 = hasher2.finalize();
+    if &digest2[..16] != &buf[4..20] { anyhow::bail!("bad response authenticator #2"); }
+
+    let (hdr3, _rest3) = radius_core::packet::Header::parse(&buf[..n2])?;
+    if hdr3.code == Code::AccessAccept { println!("MFA OK: Access-Accept"); Ok(()) } else { anyhow::bail!("MFA rejected") }
+}
+
+fn compute_nthash_hex(password: &str) -> String {
+    use md4::Md4;
+    let mut le = Vec::with_capacity(password.len()*2);
+    for ch in password.encode_utf16() {
+        le.extend_from_slice(&ch.to_le_bytes());
+    }
+    let mut md4 = Md4::new();
+    md4.update(&le);
+    let out = md4.finalize();
+    hex::encode(out)
 }
