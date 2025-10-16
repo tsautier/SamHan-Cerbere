@@ -1,8 +1,8 @@
 use serde::{Serialize, Deserialize};
 use std::fs;
 use anyhow::Result;
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use password_hash::SaltString;
+use argon2::Argon2;
+use password_hash::{SaltString, PasswordHash, PasswordHasher, PasswordVerifier};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserRecord { pub username:String, pub hash:String }
