@@ -1,0 +1,21 @@
+# Cerbère default configuration (skeleton)
+
+[server]
+bind = "0.0.0.0:1812"
+shared_secret = "change-me"
+concurrency = 1024
+hot_reload = true
+
+[backend.primary]
+type = "ldap"
+url = "ldaps://ldap.example.com:636"
+bind_dn = "cn=bind,dc=example,dc=com"
+bind_password = "change-me"
+user_base_dn = "ou=users,dc=example,dc=com"
+group_base_dn = "ou=groups,dc=example,dc=com"
+
+[mfa.chain]
+steps = ["totp"]
+
+[mfa.totp]
+issuer = "SamHan-Cerbere"

@@ -1,0 +1,17 @@
+[workspace]
+members = [
+  "crates/radius-core",
+  "crates/policy-engine",
+  "crates/mfa-broker",
+  "crates/id-connectors",
+  "crates/storage",
+  "crates/telemetry",
+  "crates/cli",
+  "crates/gui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["SamHan <contact@samhan.fr>"]

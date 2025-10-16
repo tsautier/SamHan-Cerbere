@@ -1,0 +1,8 @@
+# Corp default policy (skeleton)
+[[rules]]
+when = "group == 'VPN-Users'"
+action = "allow_mfa"
+
+[[rules]]
+when = "hour < 6 or hour > 22"
+action = "require_strong_mfa"

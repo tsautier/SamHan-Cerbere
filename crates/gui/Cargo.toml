@@ -1,0 +1,13 @@
+[package]
+name = "gui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+iced = { version = "0.13", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread","macros"] }
+tracing = "0.1"
+telemetry = { path = "../telemetry" }
+radius-core = { path = "../radius-core" }
