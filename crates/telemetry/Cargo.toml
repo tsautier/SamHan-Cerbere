@@ -5,5 +5,9 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+opentelemetry = { version = "0.21", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.14", features = ["grpc-tonic","metrics"] }
+opentelemetry_sdk = { version = "0.21", features = ["metrics","rt-tokio"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt","env-filter","json"] }
+tracing-opentelemetry = "0.22"
+tracing-subscriber = { version = "0.3", features = ["fmt","env-filter","json","registry"] }

@@ -7,7 +7,7 @@
 - Auth primaire pluggable (fichier local, LDAP/AD — stub)
 - MFA TOTP (enrôlement CLI/GUI, vérif côté serveur — en cours)
 - Moteur de politiques simple (first‑match) et outils d’intégration
-- Observabilité (tracing), limites de débit & lockout, audit minimal
+- Observabilité (tracing + métriques OTLP via OpenTelemetry, cf. [docs/observability.md](./docs/observability.md)), limites de débit & lockout, audit minimal
 
 > État : **MVP fonctionnel** — serveur RADIUS, loader de config, parser d’attributs, rate‑limit, TOTP enroll, GUI de base, snippets d’intégration.
 > Des fonctionnalités sont stub/à compléter (LDAP réel, chaînage MFA/Policy vers décision).
@@ -75,6 +75,7 @@ action = "require_strong_mfa"
 ## Build CI
 - GitHub Actions (Linux/macOS/Windows) : build + test + clippy.
 - Logs JSON facultatifs : `CERBERE_LOG_JSON=1` ; niveaux via `RUST_LOG`.
+- Export OpenTelemetry (OTLP gRPC) : définir `CERBERE_OTEL_ENDPOINT`, options `CERBERE_OTEL_INTERVAL_SECS`, `CERBERE_OTEL_TIMEOUT_MS`, `CERBERE_SERVICE_NAME`.
 
 ## Licence
 MIT — voir [LICENSE](./LICENSE).
