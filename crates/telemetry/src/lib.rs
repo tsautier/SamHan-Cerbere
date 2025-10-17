@@ -1,22 +1,18 @@
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-    metrics::MeterProvider, resource::Resource, runtime::Tokio, trace, Resource as _,
+    metrics::{MeterProvider, PeriodicReader},
+    resource::Resource,
+    runtime::Tokio,
+    trace,
 };
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-    Layer,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 const DEFAULT_EXPORT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_EXPORT_TIMEOUT_MS: u64 = 5000;
 
 pub struct TelemetryGuard {
     meter_provider: Option<MeterProvider>,
-    tracer_provider: Option<trace::TracerProvider>,
     otel_enabled: bool,
 }
 
@@ -24,7 +20,6 @@ impl Default for TelemetryGuard {
     fn default() -> Self {
         Self {
             meter_provider: None,
-            tracer_provider: None,
             otel_enabled: false,
         }
     }
@@ -33,15 +28,9 @@ impl Default for TelemetryGuard {
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if self.otel_enabled {
-            if let Some(provider) = self.tracer_provider.take() {
-                if let Err(err) = provider.shutdown() {
-                    eprintln!("failed to shutdown tracer provider: {err}");
-                }
-            } else {
-                global::shutdown_tracer_provider();
-            }
+            global::shutdown_tracer_provider();
 
-            if let Some(mut provider) = self.meter_provider.take() {
+            if let Some(provider) = self.meter_provider.take() {
                 if let Err(err) = provider.shutdown() {
                     eprintln!("failed to shutdown metrics provider: {err}");
                 }
@@ -72,58 +61,94 @@ pub fn init() -> TelemetryGuard {
 
     let resource = Resource::new(vec![KeyValue::new("service.name", service_name)]);
 
-    let fmt_layer = if json {
-        fmt::layer().json().boxed()
+    if let Some(endpoint) = otlp_endpoint {
+        init_with_otlp(
+            json,
+            filter,
+            endpoint,
+            resource,
+            export_interval,
+            export_timeout,
+        )
     } else {
-        fmt::layer().boxed()
-    };
+        init_without_otlp(json, filter)
+    }
+}
 
+fn init_with_otlp(
+    json: bool,
+    filter: EnvFilter,
+    endpoint: String,
+    resource: Resource,
+    export_interval: u64,
+    export_timeout: u64,
+) -> TelemetryGuard {
     let mut guard = TelemetryGuard::default();
 
-    if let Some(endpoint) = otlp_endpoint {
-        let trace_layer = build_trace_layer(&endpoint, &resource, export_timeout);
-        let meter_provider =
-            build_meter_provider(&endpoint, &resource, export_interval, export_timeout);
+    let tracer = init_tracer(&endpoint, &resource, export_timeout);
+    let meter_provider =
+        build_meter_provider(&endpoint, &resource, export_interval, export_timeout);
 
-        let mut registry = tracing_subscriber::registry()
+    if json {
+        if let Some(tracer) = tracer.clone() {
+            guard.otel_enabled = true;
+            let registry = tracing_subscriber::registry()
+                .with(filter.clone())
+                .with(fmt::layer().json())
+                .with(tracing_opentelemetry::layer().with_tracer(tracer));
+            let _ = registry.try_init();
+        } else {
+            let registry = tracing_subscriber::registry()
+                .with(filter.clone())
+                .with(fmt::layer().json());
+            let _ = registry.try_init();
+        }
+    } else if let Some(tracer) = tracer {
+        guard.otel_enabled = true;
+        let registry = tracing_subscriber::registry()
             .with(filter.clone())
-            .with(fmt_layer.clone());
-
-        if let Some((layer, provider)) = trace_layer {
-            registry = registry.with(layer);
-            guard.otel_enabled = true;
-            guard.tracer_provider = Some(provider);
-        }
-
-        if let Some(provider) = meter_provider {
-            global::set_meter_provider(provider.clone());
-            guard.meter_provider = Some(provider);
-            guard.otel_enabled = true;
-        }
-
+            .with(fmt::layer())
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
         let _ = registry.try_init();
     } else {
-        let _ = tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt_layer)
-            .try_init();
+        let registry = tracing_subscriber::registry()
+            .with(filter.clone())
+            .with(fmt::layer());
+        let _ = registry.try_init();
     }
+
+    if let Some(provider) = meter_provider.clone() {
+        global::set_meter_provider(provider);
+        guard.otel_enabled = true;
+    }
+
+    guard.meter_provider = meter_provider;
 
     guard
 }
 
-fn build_trace_layer(
+fn init_without_otlp(json: bool, filter: EnvFilter) -> TelemetryGuard {
+    if json {
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt::layer().json())
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt::layer())
+            .try_init();
+    }
+
+    TelemetryGuard::default()
+}
+
+fn init_tracer(
     endpoint: &str,
     resource: &Resource,
     timeout_ms: u64,
-) -> Option<(
-    tracing_opentelemetry::OpenTelemetryLayer<
-        tracing_subscriber::Registry,
-        opentelemetry_sdk::trace::Tracer,
-    >,
-    trace::TracerProvider,
-)> {
-    use opentelemetry_sdk::trace::TracerProvider;
+) -> Option<opentelemetry_sdk::trace::Tracer> {
+    use opentelemetry::trace::TracerProvider as _;
 
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
@@ -148,9 +173,9 @@ fn build_trace_layer(
         .build();
 
     let tracer = provider.tracer("cerbere");
-    global::set_tracer_provider(provider.clone());
+    global::set_tracer_provider(provider);
 
-    Some((tracing_opentelemetry::layer().with_tracer(tracer), provider))
+    Some(tracer)
 }
 
 fn build_meter_provider(
@@ -159,17 +184,17 @@ fn build_meter_provider(
     interval_secs: u64,
     timeout_ms: u64,
 ) -> Option<MeterProvider> {
-    use opentelemetry_otlp::ExportConfig;
-    use opentelemetry_sdk::metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector, PeriodicReader};
+    use opentelemetry_sdk::metrics::reader::{
+        DefaultAggregationSelector, DefaultTemporalitySelector,
+    };
 
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
         .with_endpoint(endpoint.to_string())
         .with_timeout(std::time::Duration::from_millis(timeout_ms))
         .build_metrics_exporter(
-            ExportConfig::default(),
-            Box::new(DefaultTemporalitySelector::new()),
             Box::new(DefaultAggregationSelector::new()),
+            Box::new(DefaultTemporalitySelector::new()),
         )
         .map_err(|err| {
             eprintln!("failed to build OTLP metrics exporter: {err}");
