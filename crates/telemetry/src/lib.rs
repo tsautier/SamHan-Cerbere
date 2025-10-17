@@ -1,27 +1,45 @@
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-    metrics::SdkMeterProvider, resource::Resource, runtime::Tokio, trace, Resource as _,
+    metrics::MeterProvider, resource::Resource, runtime::Tokio, trace, Resource as _,
 };
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{
+    fmt,
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+    EnvFilter,
+    Layer,
+};
 
 const DEFAULT_EXPORT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_EXPORT_TIMEOUT_MS: u64 = 5000;
 
-#[derive(Default)]
 pub struct TelemetryGuard {
-    meter_provider: Option<SdkMeterProvider>,
+    meter_provider: Option<MeterProvider>,
+    tracer_provider: Option<trace::TracerProvider>,
     otel_enabled: bool,
+}
+
+impl Default for TelemetryGuard {
+    fn default() -> Self {
+        Self {
+            meter_provider: None,
+            tracer_provider: None,
+            otel_enabled: false,
+        }
+    }
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if self.otel_enabled {
-            // Flush traces before shutdown
-            if let Err(err) = global::force_flush_tracer_provider() {
-                eprintln!("failed to flush tracer provider: {err}");
+            if let Some(provider) = self.tracer_provider.take() {
+                if let Err(err) = provider.shutdown() {
+                    eprintln!("failed to shutdown tracer provider: {err}");
+                }
+            } else {
+                global::shutdown_tracer_provider();
             }
-            global::shutdown_tracer_provider();
 
             if let Some(mut provider) = self.meter_provider.take() {
                 if let Err(err) = provider.shutdown() {
@@ -71,9 +89,10 @@ pub fn init() -> TelemetryGuard {
             .with(filter.clone())
             .with(fmt_layer.clone());
 
-        if let Some(layer) = trace_layer {
+        if let Some((layer, provider)) = trace_layer {
             registry = registry.with(layer);
             guard.otel_enabled = true;
+            guard.tracer_provider = Some(provider);
         }
 
         if let Some(provider) = meter_provider {
@@ -97,12 +116,13 @@ fn build_trace_layer(
     endpoint: &str,
     resource: &Resource,
     timeout_ms: u64,
-) -> Option<
+) -> Option<(
     tracing_opentelemetry::OpenTelemetryLayer<
         tracing_subscriber::Registry,
         opentelemetry_sdk::trace::Tracer,
     >,
-> {
+    trace::TracerProvider,
+)> {
     use opentelemetry_sdk::trace::TracerProvider;
 
     let exporter = opentelemetry_otlp::new_exporter()
@@ -121,15 +141,16 @@ fn build_trace_layer(
         .with_scheduled_delay(std::time::Duration::from_millis(500))
         .build();
 
+    let config = trace::Config::default().with_resource(resource.clone());
     let provider = trace::TracerProvider::builder()
-        .with_resource(resource.clone())
+        .with_config(config)
         .with_span_processor(batch_processor)
         .build();
 
     let tracer = provider.tracer("cerbere");
     global::set_tracer_provider(provider.clone());
 
-    Some(tracing_opentelemetry::layer().with_tracer(tracer))
+    Some((tracing_opentelemetry::layer().with_tracer(tracer), provider))
 }
 
 fn build_meter_provider(
@@ -137,26 +158,33 @@ fn build_meter_provider(
     resource: &Resource,
     interval_secs: u64,
     timeout_ms: u64,
-) -> Option<SdkMeterProvider> {
+) -> Option<MeterProvider> {
+    use opentelemetry_otlp::ExportConfig;
+    use opentelemetry_sdk::metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector, PeriodicReader};
+
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
         .with_endpoint(endpoint.to_string())
         .with_timeout(std::time::Duration::from_millis(timeout_ms))
-        .build_metrics_exporter(opentelemetry_otlp::MetricsExporterConfig::default())
+        .build_metrics_exporter(
+            ExportConfig::default(),
+            Box::new(DefaultTemporalitySelector::new()),
+            Box::new(DefaultAggregationSelector::new()),
+        )
         .map_err(|err| {
             eprintln!("failed to build OTLP metrics exporter: {err}");
             err
         })
         .ok()?;
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter, Tokio)
+    let reader = PeriodicReader::builder(exporter, Tokio)
         .with_interval(std::time::Duration::from_secs(interval_secs.max(1)))
         .build();
 
-    Some(
-        SdkMeterProvider::builder()
-            .with_resource(resource.clone())
-            .with_reader(reader)
-            .build(),
-    )
+    let provider = MeterProvider::builder()
+        .with_resource(resource.clone())
+        .with_reader(reader)
+        .build();
+
+    Some(provider)
 }
